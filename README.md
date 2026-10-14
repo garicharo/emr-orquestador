@@ -1,6 +1,9 @@
-# Pipeline EMR, en dos versiones
+# Dos pipelines
 
-Reconstrucción del diseño para estudiarlo y subirlo. No es el repositorio original de Aeroméxico: no hay ids de cuenta, ni credenciales, ni el código Spark que corrió en el cluster.
+Dos arquitecturas para enseñarlas y compartirlas. No son los repositorios originales: no hay ids de cuenta, ni credenciales, ni el código que corrió en producción.
+
+1. Data lake en EMR, multi-cuenta.
+2. GBC Connected, el ETL serverless de datos IoT de plantas de Grupo Bimbo. BBU (Bimbo Bakeries USA) era el siguiente rollout y no forma parte de este diseño.
 
 La versión 1 es un solo sistema. La versión 2 es la evolución, cuando el cómputo sale del cluster encendido.
 
@@ -83,3 +86,49 @@ Los nombres de cuenta y los ARN se pasan al deploy. No viven en este repo.
 ```bash
 mvn test
 ```
+
+## GBC Connected: datos IoT de planta
+
+Grupo Bimbo. Llegaban producción y servicios (agua, energía, electricidad, masa, envolturas) por varias puertas. El trabajo era dejarlos en un esquema, por país, región, planta, línea, turno y máquina.
+
+```mermaid
+flowchart LR
+  mqtt["Dispositivos MQTT"] --> iot["AWS IoT Core"]
+  sigfox["Sigfox HTTP o MQTT"] --> door["Misma entrada"]
+  http["Web y terceros"] --> apigw["API Gateway"]
+  iot --> door
+  apigw --> lambda["Lambda"]
+  door --> lambda
+  partner["Partner API"] --> poll["Lambda en EventBridge, cerca de 5 min"]
+  poll --> lambda
+  lambda --> firehose["Kinesis Data Firehose"]
+  firehose --> steps["Step Functions"]
+  steps --> raw["raw"]
+  raw --> stage["formatted / stage"]
+  stage --> enrich["enrichment"]
+  dynamo["DynamoDB: metadata y últimas 5 mediciones"] --> steps
+  steps --> dlq["Dead-letter queue"]
+```
+
+El poll existe porque ese partner a veces devolvía huecos o filas fuera de orden. DynamoDB no era el warehouse. Guardaba la metadata del dispositivo y las últimas cinco mediciones, para insertar un acumulado atrasado y recalcular el delta. La llave de la medición es device id y timestamp en milisegundos. Un lote de unas 60 filas podía traer un minuto que otra Lambda ya había procesado.
+
+La misma petición podía correr dos veces entre API Gateway y Lambda. No recuerdo la causa. La escritura idempotente cae en el mismo ítem de DynamoDB. La cola FIFO también tenía un id de deduplicación. No recuerdo esa cadena.
+
+```mermaid
+flowchart LR
+  enrich["enrichment"] --> azure["Azure, sync incremental"]
+  enrich --> aurora["Aurora us-east-1"]
+  aurora --> replica["Réplica del cluster en el oeste"]
+  enrich --> ec2["EC2 en la VPC"]
+  ec2 --> plant["Bases locales de planta"]
+  silence["Silencio 3, 6, 12 o 24 h"] --> sns["Tablero y SNS"]
+  band["Umbral por máquina, día y turno"] --> work["Orden de trabajo en otro sistema"]
+```
+
+Azure iba incremental por el cupo de conexiones. Las bases de planta no se alcanzaban desde la Lambda: el EC2 era el puente dentro de la VPC. El cluster de Aurora en Virginia se replicaba a uno en el oeste. No recuerdo si la tabla de DynamoDB del oeste iba por streams o por global table.
+
+El tráfico de producción se quedaba en us-east-1. El stack del oeste ya estaba levantado, con su tabla, y esas Lambdas no corrían. El hostname único, si lo había, no estaba dentro de los dos stacks: estaría delante, en Route 53 o en CloudFront. No recuerdo cuál.
+
+El deploy era CDK. Un push a GitLab aplicaba dos stacks de CloudFormation. El principal era us-east-1. El de espera era la región oeste.
+
+Empezó en unos cinco dispositivos. Cada Lambda era un paso. Si uno fallaba, el paso anterior ya había dejado la lectura. La ingesta era seguida, cerca de una por segundo, así que el frío de Lambda dejó de ser el diseño.
