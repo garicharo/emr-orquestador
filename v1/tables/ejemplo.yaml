@@ -1,0 +1,7 @@
+# Una tabla, un stack. El nombre es de ejemplo.
+# La cuenta de origen y el rol cruzado los pone el pipeline al desplegar.
+tableName: ejemplo
+glueDatabase: analytics
+writeMode: DELTA
+partitionColumn:
+targetBucketParameter: TargetBucketName

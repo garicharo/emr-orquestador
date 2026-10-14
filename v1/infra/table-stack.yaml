@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  One Glue table for one pipeline table. Account ids and cross-account role
+  ARNs are parameters. They are not stored in this file.
+
+Parameters:
+  TableName:
+    Type: String
+  GlueDatabaseName:
+    Type: String
+  TargetBucketName:
+    Type: String
+  CrossAccountReadRoleArn:
+    Type: String
+    Description: Role in the source account, supplied at deploy time.
+
+Resources:
+  CatalogTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabaseName
+      TableInput:
+        Name: !Ref TableName
+        Description: !Sub "Reads via ${CrossAccountReadRoleArn}"
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+        StorageDescriptor:
+          Location: !Sub "s3://${TargetBucketName}/${TableName}/"
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - Name: id
+              Type: string
+
+Outputs:
+  TableLocation:
+    Value: !Sub "s3://${TargetBucketName}/${TableName}/"
